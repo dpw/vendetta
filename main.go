@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"sort"
 	"strings"
 )
@@ -16,6 +17,7 @@ import (
 // prune support
 // update support
 // proper go-import meta tag handling
+// exhaustive option
 
 func main() {
 	state := state{
@@ -90,7 +92,7 @@ func (state *state) processRecursive(dir string, root bool) error {
 	}
 
 	var subdirs []string
-	if err := readDir(joinPath(state.root, dir), func(fi os.FileInfo) bool {
+	if err := readDir(path.Join(state.root, dir), func(fi os.FileInfo) bool {
 		if fi.IsDir() {
 			subdirs = append(subdirs, fi.Name())
 		}
@@ -109,7 +111,7 @@ func (state *state) processRecursive(dir string, root bool) error {
 			continue
 		}
 
-		err := state.processRecursive(joinPath(dir, subdir), false)
+		err := state.processRecursive(path.Join(dir, subdir), false)
 		if err != nil {
 			return err
 		}
@@ -125,7 +127,7 @@ func (state *state) process(dir string, testsToo bool) error {
 
 	state.processedDirs[dir] = struct{}{}
 
-	pkg, err := build.Default.ImportDir(joinPath(state.root, dir), 0)
+	pkg, err := build.Default.ImportDir(path.Join(state.root, dir), 0)
 	if err != nil {
 		if _, ok := err.(*build.NoGoError); ok {
 			return nil
@@ -193,7 +195,7 @@ func (state *state) resolvePackage(pkg string) (string, error) {
 		}
 
 		proj.name = strings.Join(bits[0:rootLen], "/")
-		proj.dir = joinPath("vendor", packageToPath(proj.name))
+		proj.dir = path.Join("vendor", packageToPath(proj.name))
 		if err := state.submoduleAdd(url, proj.dir); err != nil {
 			return "", err
 		}
@@ -205,7 +207,7 @@ func (state *state) resolvePackage(pkg string) (string, error) {
 		return proj.dir, nil
 	}
 
-	return joinPath(proj.dir, packageToPath(pkg[len(proj.name)+1:])), nil
+	return path.Join(proj.dir, packageToPath(pkg[len(proj.name)+1:])), nil
 }
 
 func (state *state) findPackageProject(pkg string) (project, bool) {
@@ -305,17 +307,6 @@ func (state *state) submoduleAdd(url, dir string) error {
 	}
 
 	return err
-}
-
-func joinPath(a, b string) string {
-	switch {
-	case a == "":
-		return b
-	case b == "":
-		return a
-	default:
-		return a + string(os.PathSeparator) + b
-	}
 }
 
 // Convert a package name to a filesystem path
