@@ -5,17 +5,21 @@ import (
 	"fmt"
 	"go/build"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 // TODO:
-// Check that start dir is git repo, determine names from git config, or GOPATH
+// default to current dir
 // prune support
 // update support
+// explicit project name
+// infer project name from GOPATH
 // proper go-import meta tag handling
 // exhaustive option
 
@@ -25,9 +29,14 @@ func main() {
 		processedDirs: make(map[string]struct{}),
 	}
 
-	state.addProject(project{name: os.Args[2], dir: ""})
+	state.inferProjectNameFromGit()
 
-	if err := state.populate(); err != nil {
+	if len(state.projects) == 0 {
+		fmt.Fprintln(os.Stderr, "Unable to infer project name")
+		os.Exit(1)
+	}
+
+	if err := state.populateFromSubmodules(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -49,22 +58,58 @@ type project struct {
 	dir  string
 }
 
-func (state *state) populate() error {
-	cmd := exec.Command("git", "-C", state.root, "submodule", "status")
-	stdout, err := cmd.StdoutPipe()
+var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
+
+func (state *state) inferProjectNameFromGit() error {
+	remotes, err := popen("git", "-C", state.root, "remote", "-v")
 	if err != nil {
 		return err
 	}
 
-	if err := cmd.Start(); err != nil {
+	defer remotes.close()
+
+	for remotes.Scan() {
+		fields := splitWS(remotes.Text())
+		m := remoteUrlRE.FindStringSubmatch(fields[1])
+		if m != nil {
+			proj := m[1]
+			if strings.HasSuffix(proj, ".git") {
+				proj = proj[:len(proj)-4]
+			}
+
+			proj = "github.com/" + proj
+			if _, found := state.findPackageProject(proj); !found {
+				fmt.Println("Inferred package name", proj, "from git remote")
+				state.addProject(project{name: proj, dir: ""})
+			}
+		}
+	}
+
+	if err := remotes.close(); err != nil {
 		return err
 	}
 
-	vendorPref := "vendor" + string(os.PathSeparator)
+	return nil
+}
 
-	lines := bufio.NewScanner(stdout)
-	for lines.Scan() {
-		fields := strings.Split(strings.TrimSpace(lines.Text()), " ")
+var wsRE = regexp.MustCompile(`[ \t]+`)
+
+func splitWS(s string) []string {
+	return wsRE.Split(s, -1)
+}
+
+var vendorPref = "vendor" + string(os.PathSeparator)
+
+func (state *state) populateFromSubmodules() error {
+	status, err := popen("git", "-C", state.root, "submodule", "status")
+	if err != nil {
+		return err
+	}
+
+	defer status.close()
+
+	for status.Scan() {
+		fields := splitWS(strings.TrimSpace(status.Text()))
 		path := fields[1]
 
 		if strings.HasPrefix(path, vendorPref) {
@@ -75,15 +120,56 @@ func (state *state) populate() error {
 		}
 	}
 
-	if err := lines.Err(); err != nil {
-		return err
+	return status.close()
+}
+
+type popenLines struct {
+	cmd    *exec.Cmd
+	stdout io.ReadCloser
+	*bufio.Scanner
+}
+
+func popen(name string, args ...string) (popenLines, error) {
+	cmd := exec.Command(name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return popenLines{}, err
 	}
 
-	if err := cmd.Wait(); err != nil {
-		return err
+	cmd.Stderr = os.Stderr
+	p := popenLines{cmd: cmd, stdout: stdout}
+
+	if err := cmd.Start(); err != nil {
+		return popenLines{}, err
 	}
 
-	return nil
+	p.Scanner = bufio.NewScanner(stdout)
+	return p, nil
+}
+
+func (p popenLines) close() error {
+	res := p.Scanner.Err()
+	setRes := func(err error) {
+		if res == nil {
+			res = err
+		}
+	}
+
+	if p.stdout != nil {
+		_, err := io.Copy(ioutil.Discard, p.stdout)
+		p.stdout = nil
+		if err != nil {
+			setRes(err)
+			p.cmd.Process.Kill()
+		}
+	}
+
+	if p.cmd != nil {
+		setRes(p.cmd.Wait())
+		p.cmd = nil
+	}
+
+	return res
 }
 
 func (state *state) processRecursive(dir string, root bool) error {
