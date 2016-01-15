@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"go/build"
 	"io"
@@ -20,8 +21,6 @@ import (
 //
 // update support
 //
-// explicit project name
-//
 // proper go-import meta tag handling
 //
 // check that declared package names match dirs
@@ -34,13 +33,34 @@ import (
 // particular path, but it's not.  E.g. when resolving an import of
 // github.com/foo/bar/baz, we find github.com/foo.
 
+type config struct {
+	rootDir     string
+	projectName string
+}
+
 func main() {
-	rootDir := "."
-	if len(os.Args) > 1 {
-		rootDir = os.Args[1]
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [ <project directory> ]\n",
+			os.Args[0])
+		flag.PrintDefaults()
 	}
 
-	if err := run(rootDir); err != nil {
+	var cf config
+
+	flag.StringVar(&cf.projectName, "p", "",
+		"base package name for the project, e.g. github.com/user/proj")
+	flag.Parse()
+
+	cf.rootDir = "."
+	switch {
+	case flag.NArg() == 1:
+		cf.rootDir = flag.Arg(1)
+	case flag.NArg() > 1:
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	if err := run(&cf); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -69,21 +89,26 @@ type goPath struct {
 	next     *goPath
 }
 
-func run(rootDir string) error {
+func run(cf *config) error {
 	v := vendetta{
-		rootDir:       rootDir,
+		rootDir:       cf.rootDir,
 		goPaths:       make(map[string]*goPath),
 		processedDirs: make(map[string]struct{}),
 	}
 
 	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
 	v.prefixes = make(map[string]struct{})
-	if err := v.inferProjectNameFromGit(); err != nil {
-		return err
-	}
 
-	if len(v.prefixes) == 0 {
-		return fmt.Errorf("Unable to infer project name")
+	if cf.projectName != "" {
+		v.prefixes[cf.projectName] = struct{}{}
+	} else {
+		if err := v.inferProjectNameFromGit(); err != nil {
+			return err
+		}
+
+		if len(v.prefixes) == 0 {
+			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-p' option.")
+		}
 	}
 
 	if err := v.populateSubmodules(); err != nil {
