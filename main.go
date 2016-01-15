@@ -10,20 +10,29 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 )
 
 // TODO:
-// default to current dir
-// warn if a pkg is belongs to an existing submodule, but it wasn't found there
-// same, but for recursive submodules
+//
 // prune support
+//
 // update support
+//
 // explicit project name
+//
 // proper go-import meta tag handling
+//
 // check that declared package names match dirs
+//
 // infer project name from GOPATH
+//
 // use type aliases for packages and paths?
+//
+// warn when it looks like a package ought to be present at the
+// particular path, but it's not.  E.g. when resolving an import of
+// github.com/foo/bar/baz, we find github.com/foo.
 
 func main() {
 	rootDir := "."
@@ -42,6 +51,7 @@ type vendetta struct {
 	goPath
 	goPaths       map[string]*goPath
 	processedDirs map[string]struct{}
+	submodules    []string
 	trace         []trace
 }
 
@@ -68,10 +78,16 @@ func run(rootDir string) error {
 
 	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
 	v.prefixes = make(map[string]struct{})
-	v.inferProjectNameFromGit()
+	if err := v.inferProjectNameFromGit(); err != nil {
+		return err
+	}
 
 	if len(v.prefixes) == 0 {
 		return fmt.Errorf("Unable to infer project name")
+	}
+
+	if err := v.populateSubmodules(); err != nil {
+		return err
 	}
 
 	return v.processRecursive("", true)
@@ -89,6 +105,10 @@ func (v *vendetta) inferProjectNameFromGit() error {
 
 	for remotes.Scan() {
 		fields := splitWS(remotes.Text())
+		if len(fields) < 2 {
+			return fmt.Errorf("could not parse 'git remote' output")
+		}
+
 		m := remoteUrlRE.FindStringSubmatch(fields[1])
 		if m != nil {
 			name := m[1]
@@ -109,6 +129,62 @@ func (v *vendetta) inferProjectNameFromGit() error {
 	}
 
 	return nil
+}
+
+func (v *vendetta) populateSubmodules() error {
+	status, err := popen("git", "-C", v.rootDir, "submodule", "status",
+		"--recursive")
+	if err != nil {
+		return err
+	}
+
+	defer status.close()
+
+	for status.Scan() {
+		fields := splitWS(strings.TrimSpace(status.Text()))
+		if len(fields) < 2 {
+			return fmt.Errorf("could not parse 'git submodule status' output")
+		}
+
+		path := fields[1]
+
+		if err := v.checkSubmodule(path); err != nil {
+			return err
+		}
+
+		v.submodules = append(v.submodules, path)
+	}
+
+	sort.Strings(v.submodules)
+	return status.close()
+}
+
+// Check for a submodule that seems to be missing in the working tree.
+func (v *vendetta) checkSubmodule(dir string) error {
+	foundSomething := false
+	if err := readDir(dir, func(fi os.FileInfo) bool {
+		foundSomething = true
+		return false
+	}); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	if !foundSomething {
+		return fmt.Errorf("The submodule '%s' doesn't seem to the present in the working tree.  Maybe you forgot to update with 'git submodule update --init --recursive'?", dir)
+	}
+
+	return nil
+}
+
+func (v *vendetta) pathInSubmodule(path string) bool {
+	i := sort.SearchStrings(v.submodules, path)
+	return (i < len(v.submodules) && v.submodules[i] == path) ||
+		(i > 0 && isSubpath(path, v.submodules[i-1]))
+}
+
+func isSubpath(path, dir string) bool {
+	return path == dir ||
+		(strings.HasPrefix(path, dir) && path[len(dir)] == '/')
 }
 
 var wsRE = regexp.MustCompile(`[ \t]+`)
@@ -377,9 +453,8 @@ func (gp *goPath) removePrefix(pkg string) (bool, string) {
 	for prefix := range gp.prefixes {
 		if pkg == prefix {
 			return true, ""
-		} else if strings.HasPrefix(pkg, prefix) &&
-			pkg[len(prefix)] == '/' {
-			return true, pkg[len(prefix):]
+		} else if isSubpath(pkg, prefix) {
+			return true, pkg[len(prefix)+1:]
 		}
 	}
 
