@@ -23,24 +23,15 @@ import (
 // proper go-import meta tag handling
 // check that declared package names match dirs
 // infer project name from GOPATH
+// use type aliases for packages and paths?
 
 func main() {
-	v := vendetta{
-		rootDir:       os.Args[1],
-		goPaths:       make(map[string]*goPath),
-		processedDirs: make(map[string]struct{}),
+	rootDir := "."
+	if len(os.Args) > 1 {
+		rootDir = os.Args[1]
 	}
 
-	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
-	v.prefixes = make(map[string]struct{})
-	v.inferProjectNameFromGit()
-
-	if len(v.prefixes) == 0 {
-		fmt.Fprintln(os.Stderr, "Unable to infer project name")
-		os.Exit(1)
-	}
-
-	if err := v.processRecursive("", true); err != nil {
+	if err := run(rootDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -66,6 +57,24 @@ type goPath struct {
 	dir      string
 	prefixes map[string]struct{}
 	next     *goPath
+}
+
+func run(rootDir string) error {
+	v := vendetta{
+		rootDir:       rootDir,
+		goPaths:       make(map[string]*goPath),
+		processedDirs: make(map[string]struct{}),
+	}
+
+	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
+	v.prefixes = make(map[string]struct{})
+	v.inferProjectNameFromGit()
+
+	if len(v.prefixes) == 0 {
+		return fmt.Errorf("Unable to infer project name")
+	}
+
+	return v.processRecursive("", true)
 }
 
 var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
@@ -167,13 +176,17 @@ func (p popenLines) close() error {
 	return res
 }
 
+func (v *vendetta) realDir(dir string) string {
+	return path.Join(v.rootDir, dir)
+}
+
 func (v *vendetta) processRecursive(dir string, root bool) error {
-	if err := v.process(dir, true); err != nil {
+	if err := v.process(dir, true, false); err != nil {
 		return err
 	}
 
 	var subdirs []string
-	if err := readDir(path.Join(v.rootDir, dir), func(fi os.FileInfo) bool {
+	if err := readDir(v.realDir(dir), func(fi os.FileInfo) bool {
 		if fi.IsDir() {
 			subdirs = append(subdirs, fi.Name())
 		}
@@ -201,20 +214,21 @@ func (v *vendetta) processRecursive(dir string, root bool) error {
 	return nil
 }
 
-func (v *vendetta) process(dir string, testsToo bool) error {
+func (v *vendetta) process(dir string, testsToo bool, strict bool) error {
 	if _, found := v.processedDirs[dir]; found {
 		return nil
 	}
 
 	v.processedDirs[dir] = struct{}{}
 
-	pkg, err := build.Default.ImportDir(path.Join(v.rootDir, dir), 0)
+	pkg, err := build.Default.ImportDir(v.realDir(dir), 0)
 	if err != nil {
-		if _, ok := err.(*build.NoGoError); ok {
+		if _, ok := err.(*build.NoGoError); ok && !strict {
 			return nil
 		}
 
-		return err
+		return fmt.Errorf("gathering imports in %s: %s",
+			v.realDir(dir), err)
 	}
 
 	deps := func(imports []string) error {
@@ -257,7 +271,7 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		}
 
 		if found {
-			return v.process(pkgdir, false)
+			return v.process(pkgdir, false, true)
 		}
 
 		gp = gp.next
@@ -291,7 +305,7 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		return err
 	}
 
-	return v.process(path.Join("vendor", packageToPath(pkg)), false)
+	return v.process(path.Join("vendor", packageToPath(pkg)), false, true)
 }
 
 func (v *vendetta) getGoPath(dir string) (*goPath, error) {
@@ -317,7 +331,7 @@ func (v *vendetta) getGoPath(dir string) (*goPath, error) {
 	// If there's a vendor/ dir here, we need to put it on the
 	// front of the gopath
 	vendorDir := path.Join(dir, "vendor")
-	fi, err := os.Stat(path.Join(v.rootDir, vendorDir))
+	fi, err := os.Stat(v.realDir(vendorDir))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
@@ -338,7 +352,7 @@ func (gp *goPath) provides(pkg string, v *vendetta) (bool, string, error) {
 
 	foundGoSrc := false
 	pkgdir := path.Join(gp.dir, packageToPath(pkg))
-	if err := readDir(path.Join(v.rootDir, pkgdir), func(fi os.FileInfo) bool {
+	if err := readDir(v.realDir(pkgdir), func(fi os.FileInfo) bool {
 		// Should check for symlinks here?
 		if fi.Mode().IsRegular() && strings.HasSuffix(fi.Name(), ".go") {
 			foundGoSrc = true
