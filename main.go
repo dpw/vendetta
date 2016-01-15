@@ -10,58 +10,68 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 )
 
 // TODO:
 // default to current dir
+// warn if a pkg is belongs to an existing submodule, but it wasn't found there
+// same, but for recursive submodules
 // prune support
 // update support
 // explicit project name
-// infer project name from GOPATH
 // proper go-import meta tag handling
-// exhaustive option
+// check that declared package names match dirs
+// infer project name from GOPATH
 
 func main() {
-	state := state{
-		root:          os.Args[1],
+	v := vendetta{
+		rootDir:       os.Args[1],
+		goPaths:       make(map[string]*goPath),
 		processedDirs: make(map[string]struct{}),
 	}
 
-	state.inferProjectNameFromGit()
+	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
+	v.prefixes = make(map[string]struct{})
+	v.inferProjectNameFromGit()
 
-	if len(state.projects) == 0 {
+	if len(v.prefixes) == 0 {
 		fmt.Fprintln(os.Stderr, "Unable to infer project name")
 		os.Exit(1)
 	}
 
-	if err := state.populateFromSubmodules(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := state.processRecursive("", true); err != nil {
+	if err := v.processRecursive("", true); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-type state struct {
-	root          string
-	projects      []project
+type vendetta struct {
+	rootDir string
+	goPath
+	goPaths       map[string]*goPath
 	processedDirs map[string]struct{}
+	trace         []trace
 }
 
-type project struct {
-	name string
-	dir  string
+type trace struct {
+	dir string
+	pkg string
+}
+
+// Conceptually, a gopath element.  These are arranged into linked
+// lists, representing the gopath applicable for a particular
+// directory (produced by getGoPath and memoized in the goPaths map).
+type goPath struct {
+	dir      string
+	prefixes map[string]struct{}
+	next     *goPath
 }
 
 var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
 
-func (state *state) inferProjectNameFromGit() error {
-	remotes, err := popen("git", "-C", state.root, "remote", "-v")
+func (v *vendetta) inferProjectNameFromGit() error {
+	remotes, err := popen("git", "-C", v.rootDir, "remote", "-v")
 	if err != nil {
 		return err
 	}
@@ -72,15 +82,15 @@ func (state *state) inferProjectNameFromGit() error {
 		fields := splitWS(remotes.Text())
 		m := remoteUrlRE.FindStringSubmatch(fields[1])
 		if m != nil {
-			proj := m[1]
-			if strings.HasSuffix(proj, ".git") {
-				proj = proj[:len(proj)-4]
+			name := m[1]
+			if strings.HasSuffix(name, ".git") {
+				name = name[:len(name)-4]
 			}
 
-			proj = "github.com/" + proj
-			if _, found := state.findPackageProject(proj); !found {
-				fmt.Println("Inferred package name", proj, "from git remote")
-				state.addProject(project{name: proj, dir: ""})
+			name = "github.com/" + name
+			if _, found := v.prefixes[name]; !found {
+				fmt.Println("Inferred package name", name, "from git remote")
+				v.prefixes[name] = struct{}{}
 			}
 		}
 	}
@@ -98,29 +108,14 @@ func splitWS(s string) []string {
 	return wsRE.Split(s, -1)
 }
 
-var vendorPref = "vendor" + string(os.PathSeparator)
-
-func (state *state) populateFromSubmodules() error {
-	status, err := popen("git", "-C", state.root, "submodule", "status")
+func (v *vendetta) submoduleAdd(url, dir string) error {
+	out, err := exec.Command("git", "-C", v.rootDir, "submodule", "add",
+		url, dir).CombinedOutput()
 	if err != nil {
-		return err
+		os.Stderr.Write(out)
 	}
 
-	defer status.close()
-
-	for status.Scan() {
-		fields := splitWS(strings.TrimSpace(status.Text()))
-		path := fields[1]
-
-		if strings.HasPrefix(path, vendorPref) {
-			state.addProject(project{
-				name: pathToPackage(path[len(vendorPref):]),
-				dir:  path,
-			})
-		}
-	}
-
-	return status.close()
+	return err
 }
 
 type popenLines struct {
@@ -172,13 +167,13 @@ func (p popenLines) close() error {
 	return res
 }
 
-func (state *state) processRecursive(dir string, root bool) error {
-	if err := state.process(dir, true); err != nil {
+func (v *vendetta) processRecursive(dir string, root bool) error {
+	if err := v.process(dir, true); err != nil {
 		return err
 	}
 
 	var subdirs []string
-	if err := readDir(path.Join(state.root, dir), func(fi os.FileInfo) bool {
+	if err := readDir(path.Join(v.rootDir, dir), func(fi os.FileInfo) bool {
 		if fi.IsDir() {
 			subdirs = append(subdirs, fi.Name())
 		}
@@ -197,7 +192,7 @@ func (state *state) processRecursive(dir string, root bool) error {
 			continue
 		}
 
-		err := state.processRecursive(path.Join(dir, subdir), false)
+		err := v.processRecursive(path.Join(dir, subdir), false)
 		if err != nil {
 			return err
 		}
@@ -206,14 +201,14 @@ func (state *state) processRecursive(dir string, root bool) error {
 	return nil
 }
 
-func (state *state) process(dir string, testsToo bool) error {
-	if _, found := state.processedDirs[dir]; found {
+func (v *vendetta) process(dir string, testsToo bool) error {
+	if _, found := v.processedDirs[dir]; found {
 		return nil
 	}
 
-	state.processedDirs[dir] = struct{}{}
+	v.processedDirs[dir] = struct{}{}
 
-	pkg, err := build.Default.ImportDir(path.Join(state.root, dir), 0)
+	pkg, err := build.Default.ImportDir(path.Join(v.rootDir, dir), 0)
 	if err != nil {
 		if _, ok := err.(*build.NoGoError); ok {
 			return nil
@@ -224,9 +219,13 @@ func (state *state) process(dir string, testsToo bool) error {
 
 	deps := func(imports []string) error {
 		for _, imp := range imports {
-			if err := state.dependency(imp); err != nil {
+			v.trace = append(v.trace, trace{dir, imp})
+
+			if err := v.dependency(dir, imp); err != nil {
 				return err
 			}
+
+			v.trace = v.trace[:len(v.trace)-1]
 		}
 		return nil
 	}
@@ -244,84 +243,133 @@ func (state *state) process(dir string, testsToo bool) error {
 	return nil
 }
 
-func hasPrefixPath(s, prefix string) bool {
-	return strings.HasPrefix(s, prefix) &&
-		len(s) > len(prefix) && s[len(prefix)] == '/'
-}
-
-func (state *state) dependency(pkg string) error {
-	dir, err := state.resolvePackage(pkg)
-	if err != nil || dir == "" {
+func (v *vendetta) dependency(dir string, pkg string) error {
+	// Search the gopath for an existing package
+	gp, err := v.getGoPath(dir)
+	if err != nil {
 		return err
 	}
 
-	return state.process(dir, false)
+	for gp != nil {
+		found, pkgdir, err := gp.provides(pkg, v)
+		if err != nil {
+			return err
+		}
+
+		if found {
+			return v.process(pkgdir, false)
+		}
+
+		gp = gp.next
+	}
+
+	// Figure out how to obtain the package. This is a rough
+	// approximation of what golang's vcs.go does:
+	bits := strings.Split(pkg, "/")
+
+	// Exclude golang standard packages
+	if !strings.Contains(bits[0], ".") {
+		return nil
+	}
+
+	// There's really no match for this package.  We need
+	// to add it.
+	f := hostingSites[bits[0]]
+	if f == nil {
+		return fmt.Errorf("Don't know how to handle package '%s'", pkg)
+	}
+
+	url, rootLen := f(bits)
+	if url == "" {
+		return fmt.Errorf("Don't know how to handle package '%s'", pkg)
+	}
+
+	name := strings.Join(bits[0:rootLen], "/")
+	fmt.Fprintf(os.Stderr, "Adding %s\n", url)
+	projDir := path.Join("vendor", packageToPath(name))
+	if err := v.submoduleAdd(url, projDir); err != nil {
+		return err
+	}
+
+	return v.process(path.Join("vendor", packageToPath(pkg)), false)
 }
 
-func (state *state) resolvePackage(pkg string) (string, error) {
-	proj, found := state.findPackageProject(pkg)
-	if !found {
-		// Figure out what a package name means. This is a rough
-		// approximation of what golang's vcs.go does:
-		bits := strings.Split(pkg, "/")
-
-		// Exclude golang standard packages
-		if !strings.Contains(bits[0], ".") {
-			return "", nil
-		}
-
-		f := hostingSites[bits[0]]
-		if f == nil {
-			return "", fmt.Errorf("Don't know how to handle package '%s'", pkg)
-		}
-
-		url, rootLen := f(bits)
-		if url == "" {
-			return "", fmt.Errorf("Don't know how to handle package '%s'", pkg)
-		}
-
-		proj.name = strings.Join(bits[0:rootLen], "/")
-		proj.dir = path.Join("vendor", packageToPath(proj.name))
-		if err := state.submoduleAdd(url, proj.dir); err != nil {
-			return "", err
-		}
-
-		state.addProject(proj)
+func (v *vendetta) getGoPath(dir string) (*goPath, error) {
+	gp := v.goPaths[dir]
+	if gp != nil {
+		return gp, nil
 	}
 
-	if pkg == proj.name {
-		return proj.dir, nil
+	// Get the gopath for the parent directory.  path.Dir doesn't
+	// do what we want here in the case where there is no path
+	// separator:
+	slash := strings.LastIndexByte(dir, os.PathSeparator)
+	parentDir := ""
+	if slash >= 0 {
+		parentDir = dir[:slash]
 	}
 
-	return path.Join(proj.dir, packageToPath(pkg[len(proj.name)+1:])), nil
+	gp, err := v.getGoPath(parentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// If there's a vendor/ dir here, we need to put it on the
+	// front of the gopath
+	vendorDir := path.Join(dir, "vendor")
+	fi, err := os.Stat(path.Join(v.rootDir, vendorDir))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if fi.IsDir() {
+		gp = &goPath{dir: vendorDir, next: gp}
+	}
+
+	v.goPaths[dir] = gp
+	return gp, nil
 }
 
-func (state *state) findPackageProject(pkg string) (project, bool) {
-	i := sort.Search(len(state.projects), func(i int) bool {
-		return state.projects[i].name >= pkg
-	})
-
-	if i < len(state.projects) && state.projects[i].name == pkg {
-		return state.projects[i], true
+func (gp *goPath) provides(pkg string, v *vendetta) (bool, string, error) {
+	matched, pkg := gp.removePrefix(pkg)
+	if !matched {
+		return false, "", nil
 	}
 
-	if i > 0 && hasPrefixPath(pkg, state.projects[i-1].name) {
-		return state.projects[i-1], true
+	foundGoSrc := false
+	pkgdir := path.Join(gp.dir, packageToPath(pkg))
+	if err := readDir(path.Join(v.rootDir, pkgdir), func(fi os.FileInfo) bool {
+		// Should check for symlinks here?
+		if fi.Mode().IsRegular() && strings.HasSuffix(fi.Name(), ".go") {
+			foundGoSrc = true
+			return false
+		}
+		return true
+	}); err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return false, "", err
 	}
 
-	return project{}, false
+	return foundGoSrc, pkgdir, nil
 }
 
-func (state *state) addProject(proj project) {
-	i := sort.Search(len(state.projects), func(i int) bool {
-		return state.projects[i].name >= proj.name
-	})
+func (gp *goPath) removePrefix(pkg string) (bool, string) {
+	if gp.prefixes == nil {
+		return true, pkg
+	}
 
-	projects := make([]project, len(state.projects)+1)
-	copy(projects, state.projects[:i])
-	projects[i] = proj
-	copy(projects[i+1:], state.projects[i:])
-	state.projects = projects
+	for prefix := range gp.prefixes {
+		if pkg == prefix {
+			return true, ""
+		} else if strings.HasPrefix(pkg, prefix) &&
+			pkg[len(prefix)] == '/' {
+			return true, pkg[len(prefix):]
+		}
+	}
+
+	return false, ""
 }
 
 var hostingSites = map[string]func([]string) (string, int){
@@ -382,17 +430,6 @@ func lookup(n int, m map[string]string) func([]string) (string, int) {
 
 		return url, n
 	}
-}
-
-func (state *state) submoduleAdd(url, dir string) error {
-	fmt.Fprintln(os.Stderr, "Adding", url)
-	out, err := exec.Command("git", "-C", state.root, "submodule", "add",
-		url, dir).CombinedOutput()
-	if err != nil {
-		os.Stderr.Write(out)
-	}
-
-	return err
 }
 
 // Convert a package name to a filesystem path
