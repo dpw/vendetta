@@ -287,7 +287,14 @@ func (v *vendetta) updateSubmodule(sm *submodule) error {
 
 	sm.updated = true
 	fmt.Fprintf(os.Stderr, "Updating submodule %s from remote\n", sm.dir)
-	return v.git("submodule", "update", "--remote", "--recursive", sm.dir)
+	if err := v.git("submodule", "update", "--remote", "--recursive", sm.dir); err != nil {
+		return err
+	}
+
+	// If we don't put the updated submodule into the index, a
+	// ubsequent ""git submodule update" will revert it, which can
+	// lead to surprises.
+	return v.git("add", sm.dir)
 }
 
 func (v *vendetta) pruneSubmodules() error {
