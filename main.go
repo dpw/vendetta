@@ -19,23 +19,24 @@ import (
 //
 // prune support
 //
-// update support
-//
 // proper go-import meta tag handling
+//
+// popen should include command in errors
+//
+// warn when it looks like a package ought to be present at the
+// particular path, but it's not.  E.g. when resolving an import of
+// github.com/foo/bar/baz, we find github.com/foo.
 //
 // check that declared package names match dirs
 //
 // infer project name from GOPATH
 //
 // use type aliases for packages and paths?
-//
-// warn when it looks like a package ought to be present at the
-// particular path, but it's not.  E.g. when resolving an import of
-// github.com/foo/bar/baz, we find github.com/foo.
 
 type config struct {
 	rootDir     string
 	projectName string
+	update      bool
 }
 
 func main() {
@@ -47,8 +48,11 @@ func main() {
 
 	var cf config
 
-	flag.StringVar(&cf.projectName, "p", "",
+	flag.StringVar(&cf.projectName, "n", "",
 		"base package name for the project, e.g. github.com/user/proj")
+	flag.BoolVar(&cf.update, "u", false,
+		"update dependency submodules (i.e. 'git pull' them)")
+
 	flag.Parse()
 
 	cf.rootDir = "."
@@ -67,17 +71,22 @@ func main() {
 }
 
 type vendetta struct {
-	rootDir string
+	*config
 	goPath
 	goPaths       map[string]*goPath
 	processedDirs map[string]struct{}
-	submodules    []string
+	submodules    []submodule
 	trace         []trace
 }
 
 type trace struct {
 	dir string
 	pkg string
+}
+
+type submodule struct {
+	dir     string
+	updated bool
 }
 
 // Conceptually, a gopath element.  These are arranged into linked
@@ -91,7 +100,7 @@ type goPath struct {
 
 func run(cf *config) error {
 	v := vendetta{
-		rootDir:       cf.rootDir,
+		config:        cf,
 		goPaths:       make(map[string]*goPath),
 		processedDirs: make(map[string]struct{}),
 	}
@@ -109,6 +118,10 @@ func run(cf *config) error {
 		if len(v.prefixes) == 0 {
 			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-p' option.")
 		}
+	}
+
+	if err := v.checkSubmodules(); err != nil {
+		return err
 	}
 
 	if err := v.populateSubmodules(); err != nil {
@@ -156,35 +169,19 @@ func (v *vendetta) inferProjectNameFromGit() error {
 	return nil
 }
 
-func (v *vendetta) populateSubmodules() error {
-	status, err := popen("git", "-C", v.rootDir, "submodule", "status",
-		"--recursive")
-	if err != nil {
+// Check for submodules that seem to be missing in the working tree.
+func (v *vendetta) checkSubmodules() error {
+	var err2 error
+	if err := v.querySubmodules(func(path string) bool {
+		err2 = v.checkSubmodule(path)
+		return err2 == nil
+	}, "--recursive"); err != nil {
 		return err
 	}
 
-	defer status.close()
-
-	for status.Scan() {
-		fields := splitWS(strings.TrimSpace(status.Text()))
-		if len(fields) < 2 {
-			return fmt.Errorf("could not parse 'git submodule status' output")
-		}
-
-		path := fields[1]
-
-		if err := v.checkSubmodule(path); err != nil {
-			return err
-		}
-
-		v.submodules = append(v.submodules, path)
-	}
-
-	sort.Strings(v.submodules)
-	return status.close()
+	return err2
 }
 
-// Check for a submodule that seems to be missing in the working tree.
 func (v *vendetta) checkSubmodule(dir string) error {
 	foundSomething := false
 	if err := readDir(dir, func(fi os.FileInfo) bool {
@@ -201,15 +198,89 @@ func (v *vendetta) checkSubmodule(dir string) error {
 	return nil
 }
 
-func (v *vendetta) pathInSubmodule(path string) bool {
-	i := sort.SearchStrings(v.submodules, path)
-	return (i < len(v.submodules) && v.submodules[i] == path) ||
-		(i > 0 && isSubpath(path, v.submodules[i-1]))
+func (v *vendetta) querySubmodules(f func(string) bool, args ...string) error {
+	args = append([]string{"-C", v.rootDir, "submodule", "status"}, args...)
+	status, err := popen("git", args...)
+	if err != nil {
+		return err
+	}
+
+	defer status.close()
+
+	for status.Scan() {
+		fields := splitWS(strings.TrimSpace(status.Text()))
+		if len(fields) < 2 {
+			return fmt.Errorf("could not parse 'git submodule status' output")
+		}
+
+		path := fields[1]
+
+		if !f(path) {
+			return nil
+		}
+	}
+
+	return status.close()
+}
+
+func (v *vendetta) populateSubmodules() error {
+	var submodules []string
+	if err := v.querySubmodules(func(path string) bool {
+		submodules = append(submodules, path)
+		return true
+	}); err != nil {
+		return err
+	}
+
+	sort.Strings(submodules)
+
+	v.submodules = make([]submodule, 0, len(submodules))
+	for _, p := range submodules {
+		v.submodules = append(v.submodules, submodule{dir: p})
+	}
+
+	return nil
+}
+
+func (v *vendetta) pathInSubmodule(path string) *submodule {
+	i := sort.Search(len(v.submodules), func(i int) bool {
+		return v.submodules[i].dir >= path
+	})
+	if i < len(v.submodules) && v.submodules[i].dir == path {
+		return &v.submodules[i]
+	}
+	if i > 0 && isSubpath(path, v.submodules[i-1].dir) {
+		return &v.submodules[i-1]
+	}
+	return nil
+}
+
+func (v *vendetta) addSubmodule(dir string) {
+	i := sort.Search(len(v.submodules), func(i int) bool {
+		return v.submodules[i].dir >= dir
+	})
+
+	submodules := make([]submodule, len(v.submodules)+1)
+	copy(submodules, v.submodules[:i])
+	submodules[i] = submodule{dir: dir, updated: true}
+	copy(submodules[i+1:], v.submodules[i:])
+	v.submodules = submodules
 }
 
 func isSubpath(path, dir string) bool {
 	return path == dir ||
 		(strings.HasPrefix(path, dir) && path[len(dir)] == '/')
+}
+
+func (v *vendetta) updateSubmodule(sm *submodule) error {
+	if sm.updated {
+		return nil
+	}
+
+	sm.updated = true
+	fmt.Fprintf(os.Stderr, "Updating submodule %s from remote\n", sm.dir)
+	return system("git", "-C", v.rootDir,
+		"submodule", "update", "--remote", "--recursive", sm.dir)
 }
 
 var wsRE = regexp.MustCompile(`[ \t]+`)
@@ -218,14 +289,32 @@ func splitWS(s string) []string {
 	return wsRE.Split(s, -1)
 }
 
-func (v *vendetta) submoduleAdd(url, dir string) error {
-	out, err := exec.Command("git", "-C", v.rootDir, "submodule", "add",
-		url, dir).CombinedOutput()
+func (v *vendetta) gitSubmoduleAdd(url, dir string) error {
+	fmt.Fprintf(os.Stderr, "Adding %s at %s\n", url, dir)
+	err := system("git", "-C", v.rootDir, "submodule", "add", url, dir)
 	if err != nil {
-		os.Stderr.Write(out)
+		return err
 	}
 
-	return err
+	v.addSubmodule(dir)
+	return nil
+}
+
+func system(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Start()
+	if err == nil {
+		err = cmd.Wait()
+		if err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("Command failed: %s %s (%s)",
+		name, strings.Join(args, " "), err)
 }
 
 type popenLines struct {
@@ -359,23 +448,22 @@ func (v *vendetta) process(dir string, testsToo bool, strict bool) error {
 }
 
 func (v *vendetta) dependency(dir string, pkg string) error {
-	// Search the gopath for an existing package
-	gp, err := v.getGoPath(dir)
-	if err != nil {
+	found, pkgdir, err := v.searchGoPath(dir, pkg)
+	switch {
+	case err != nil:
 		return err
-	}
-
-	for gp != nil {
-		found, pkgdir, err := gp.provides(pkg, v)
-		if err != nil {
-			return err
+	case found:
+		if v.update {
+			// Does it fall within an existing submodule
+			// args..under vendor/ ?
+			if sm := v.pathInSubmodule(pkgdir); sm != nil {
+				if err := v.updateSubmodule(sm); err != nil {
+					return err
+				}
+			}
 		}
 
-		if found {
-			return v.process(pkgdir, false, true)
-		}
-
-		gp = gp.next
+		return v.process(pkgdir, false, true)
 	}
 
 	// Figure out how to obtain the package. This is a rough
@@ -400,13 +488,35 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	}
 
 	name := strings.Join(bits[0:rootLen], "/")
-	fmt.Fprintf(os.Stderr, "Adding %s\n", url)
 	projDir := path.Join("vendor", packageToPath(name))
-	if err := v.submoduleAdd(url, projDir); err != nil {
+	if err := v.gitSubmoduleAdd(url, projDir); err != nil {
 		return err
 	}
 
 	return v.process(path.Join("vendor", packageToPath(pkg)), false, true)
+}
+
+// Search the gopath for the given dir to find an existing package
+func (v *vendetta) searchGoPath(dir, pkg string) (bool, string, error) {
+	gp, err := v.getGoPath(dir)
+	if err != nil {
+		return false, "", err
+	}
+
+	for gp != nil {
+		found, pkgdir, err := gp.provides(pkg, v)
+		if err != nil {
+			return false, "", err
+		}
+
+		if found {
+			return found, pkgdir, nil
+		}
+
+		gp = gp.next
+	}
+
+	return false, "", nil
 }
 
 func (v *vendetta) getGoPath(dir string) (*goPath, error) {
