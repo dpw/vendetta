@@ -17,11 +17,11 @@ import (
 
 // TODO:
 //
-// eliminate empty dirs after pruning
-//
 // proper go-import meta tag handling
 //
 // popen should include command in errors
+//
+// Deal with git being fussy when a submodule is removed then re-added
 //
 // warn when it looks like a package ought to be present at the
 // particular path, but it's not.  E.g. when resolving an import of
@@ -302,12 +302,53 @@ func (v *vendetta) pruneSubmodules() error {
 			if err := v.git("rm", "-f", sm.dir); err != nil {
 				return err
 			}
+
+			if err := v.removeEmptyDirsAbove(sm.dir); err != nil {
+				return err
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Unused submodule %s (use -p option to prune)\n", sm.dir)
 		}
 	}
 
 	return nil
+}
+
+func (v *vendetta) removeEmptyDirsAbove(dir string) error {
+	for {
+		dir = parentDir(dir)
+		if dir == "" {
+			return nil
+		}
+
+		empty := true
+		if err := readDir(v.realDir(dir), func(_ os.FileInfo) bool {
+			empty = false
+			return false
+		}); err != nil {
+			return err
+		}
+
+		if !empty {
+			return nil
+		}
+
+		if err := os.Remove(v.realDir(dir)); err != nil {
+			return err
+		}
+	}
+}
+
+// Get the directory name from a path.  path.Dir doesn't
+// do what we want in the case where there is no path
+// separator:
+func parentDir(path string) string {
+	slash := strings.LastIndexByte(path, os.PathSeparator)
+	dir := ""
+	if slash >= 0 {
+		dir = path[:slash]
+	}
+	return dir
 }
 
 var wsRE = regexp.MustCompile(`[ \t]+`)
@@ -557,16 +598,7 @@ func (v *vendetta) getGoPath(dir string) (*goPath, error) {
 		return gp, nil
 	}
 
-	// Get the gopath for the parent directory.  path.Dir doesn't
-	// do what we want here in the case where there is no path
-	// separator:
-	slash := strings.LastIndexByte(dir, os.PathSeparator)
-	parentDir := ""
-	if slash >= 0 {
-		parentDir = dir[:slash]
-	}
-
-	gp, err := v.getGoPath(parentDir)
+	gp, err := v.getGoPath(parentDir(dir))
 	if err != nil {
 		return nil, err
 	}
