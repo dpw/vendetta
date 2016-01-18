@@ -17,7 +17,7 @@ import (
 
 // TODO:
 //
-// prune support
+// eliminate empty dirs after pruning
 //
 // proper go-import meta tag handling
 //
@@ -37,6 +37,7 @@ type config struct {
 	rootDir     string
 	projectName string
 	update      bool
+	prune       bool
 }
 
 func main() {
@@ -51,7 +52,9 @@ func main() {
 	flag.StringVar(&cf.projectName, "n", "",
 		"base package name for the project, e.g. github.com/user/proj")
 	flag.BoolVar(&cf.update, "u", false,
-		"update dependency submodules (i.e. 'git pull' them)")
+		"update dependency submodules from their remote repos")
+	flag.BoolVar(&cf.prune, "p", false,
+		"prune unused dependency submodules")
 
 	flag.Parse()
 
@@ -87,6 +90,7 @@ type trace struct {
 type submodule struct {
 	dir     string
 	updated bool
+	used    bool
 }
 
 // Conceptually, a gopath element.  These are arranged into linked
@@ -128,7 +132,11 @@ func run(cf *config) error {
 		return err
 	}
 
-	return v.processRecursive("", true)
+	if err := v.processRecursive("", true); err != nil {
+		return err
+	}
+
+	return v.pruneSubmodules()
 }
 
 var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
@@ -262,14 +270,14 @@ func (v *vendetta) addSubmodule(dir string) {
 
 	submodules := make([]submodule, len(v.submodules)+1)
 	copy(submodules, v.submodules[:i])
-	submodules[i] = submodule{dir: dir, updated: true}
+	submodules[i] = submodule{dir: dir, updated: true, used: true}
 	copy(submodules[i+1:], v.submodules[i:])
 	v.submodules = submodules
 }
 
 func isSubpath(path, dir string) bool {
 	return path == dir ||
-		(strings.HasPrefix(path, dir) && path[len(dir)] == '/')
+		(strings.HasPrefix(path, dir) && path[len(dir)] == os.PathSeparator)
 }
 
 func (v *vendetta) updateSubmodule(sm *submodule) error {
@@ -279,8 +287,27 @@ func (v *vendetta) updateSubmodule(sm *submodule) error {
 
 	sm.updated = true
 	fmt.Fprintf(os.Stderr, "Updating submodule %s from remote\n", sm.dir)
-	return system("git", "-C", v.rootDir,
-		"submodule", "update", "--remote", "--recursive", sm.dir)
+	return v.git("submodule", "update", "--remote", "--recursive", sm.dir)
+}
+
+func (v *vendetta) pruneSubmodules() error {
+	for _, sm := range v.submodules {
+		if sm.used || !isSubpath(sm.dir, "vendor") {
+			continue
+		}
+
+		if v.prune {
+			fmt.Fprintf(os.Stderr, "Removing unused submodule %s\n",
+				sm.dir)
+			if err := v.git("rm", "-f", sm.dir); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Unused submodule %s (use -p option to prune)\n", sm.dir)
+		}
+	}
+
+	return nil
 }
 
 var wsRE = regexp.MustCompile(`[ \t]+`)
@@ -291,13 +318,17 @@ func splitWS(s string) []string {
 
 func (v *vendetta) gitSubmoduleAdd(url, dir string) error {
 	fmt.Fprintf(os.Stderr, "Adding %s at %s\n", url, dir)
-	err := system("git", "-C", v.rootDir, "submodule", "add", url, dir)
+	err := v.git("submodule", "add", url, dir)
 	if err != nil {
 		return err
 	}
 
 	v.addSubmodule(dir)
 	return nil
+}
+
+func (v *vendetta) git(args ...string) error {
+	return system("git", append([]string{"-C", v.rootDir}, args...)...)
 }
 
 func system(name string, args ...string) error {
@@ -453,10 +484,11 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	case err != nil:
 		return err
 	case found:
-		if v.update {
-			// Does it fall within an existing submodule
-			// args..under vendor/ ?
-			if sm := v.pathInSubmodule(pkgdir); sm != nil {
+		// Does it fall within an existing submodule
+		// args..under vendor/ ?
+		if sm := v.pathInSubmodule(pkgdir); sm != nil {
+			sm.used = true
+			if v.update {
 				if err := v.updateSubmodule(sm); err != nil {
 					return err
 				}
