@@ -17,8 +17,6 @@ import (
 
 // TODO:
 //
-// proper go-import meta tag handling
-//
 // popen should include command in errors
 //
 // Deal with git being fussy when a submodule is removed then re-added
@@ -292,7 +290,7 @@ func (v *vendetta) updateSubmodule(sm *submodule) error {
 	}
 
 	// If we don't put the updated submodule into the index, a
-	// ubsequent ""git submodule update" will revert it, which can
+	// subsequent "git submodule update" will revert it, which can
 	// lead to surprises.
 	return v.git("add", sm.dir)
 }
@@ -555,20 +553,29 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		return nil
 	}
 
-	// There's really no match for this package.  We need
-	// to add it.
-	f := hostingSites[bits[0]]
-	if f == nil {
-		return fmt.Errorf("Don't know how to handle package '%s'", pkg)
+	var rootPkg, url string
+	if bits[0] == "github.com" {
+		if len(bits) < 3 {
+			return fmt.Errorf("github.com package name %s seems to be truncated", pkg)
+		}
+
+		rootPkg = strings.Join(bits[:3], "/")
+		url = "https://" + rootPkg
+	} else {
+		rr, err := queryRepoRoot(pkg, secure)
+		if err != nil {
+			return err
+		}
+
+		if rr.vcs != "git" {
+			return fmt.Errorf("Package %s does not live in a git repo")
+		}
+
+		rootPkg = rr.root
+		url = rr.repo
 	}
 
-	url, rootLen := f(bits)
-	if url == "" {
-		return fmt.Errorf("Don't know how to handle package '%s'", pkg)
-	}
-
-	name := strings.Join(bits[0:rootLen], "/")
-	projDir := path.Join("vendor", packageToPath(name))
+	projDir := path.Join("vendor", packageToPath(rootPkg))
 	if err := v.gitSubmoduleAdd(url, projDir); err != nil {
 		return err
 	}
@@ -665,66 +672,6 @@ func (gp *goPath) removePrefix(pkg string) (bool, string) {
 	}
 
 	return false, ""
-}
-
-var hostingSites = map[string]func([]string) (string, int){
-	"github.com": func(bits []string) (string, int) {
-		if len(bits) < 3 {
-			return "", 0
-		}
-
-		return "https://" + strings.Join(bits[0:3], "/"), 3
-	},
-
-	"gopkg.in": func(bits []string) (string, int) {
-		if len(bits) < 2 {
-			return "", 0
-		}
-
-		// Most gopkg.in names are like gopkg.in/pkg.v3
-		n := 2
-		if !strings.Contains(bits[1], ".") {
-			// But some are like gopkg.in/user/pkg.v3
-			n = 3
-
-			if len(bits) < 3 {
-				return "", 0
-			}
-		}
-
-		return "https://" + strings.Join(bits[0:n], "/"), n
-	},
-
-	"google.golang.org": lookup(2, map[string]string{
-		"cloud":     "https://code.googlesource.com/gocloud",
-		"grpc":      "https://github.com/grpc/grpc-go",
-		"appengine": "https://github.com/golang/appengine",
-		"api":       "https://code.googlesource.com/google-api-go-client",
-	}),
-
-	"golang.org": lookup(3, map[string]string{
-		"net":    "https://go.googlesource.com/net",
-		"crypto": "https://go.googlesource.com/crypto",
-		"text":   "https://go.googlesource.com/text",
-		"oauth2": "https://go.googlesource.com/oauth2",
-		"tools":  "https://go.googlesource.com/tools",
-		"sys":    "https://go.googlesource.com/sys",
-	}),
-}
-
-func lookup(n int, m map[string]string) func([]string) (string, int) {
-	return func(bits []string) (string, int) {
-		if len(bits) < n {
-			return "", 0
-		}
-
-		url, found := m[bits[n-1]]
-		if !found {
-			return "", 0
-		}
-
-		return url, n
-	}
 }
 
 // Convert a package name to a filesystem path
