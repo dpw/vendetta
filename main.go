@@ -17,6 +17,15 @@ import (
 
 // TODO:
 //
+// check the directory is a git repo, and error if not
+//
+// option to run in any directory of git repo.  Needs to figure out
+// path from repo root.
+//
+// verbose option to print git commands being run
+//
+// do import path checking, as described at https://golang.org/cmd/go/
+//
 // popen should include command in errors
 //
 // Deal with git being fussy when a submodule is removed then re-added
