@@ -77,14 +77,16 @@ populate the `vendor` directory for a project with its dependencies,
 or manage those dependencies as the project evolves.  Trying to do
 this by hand is cumbersome and error prone.
 
-Other go vendoring tools are available.  But they support two
-approaches: Either they copy the source code of dependencies into
-`vendor/`, which bloats the repository of your project.  Or, they
-write a dependency metadata file under `vendor/` which says how to get
-the dependencies.  But then anyone who wants to build the project needs
-to use a specific tool to retrieve the dependencies. (And there is no
-dominant standard for the dependency metadata files – there are even
-two different formats fore a file called `vendor.json`.)
+[Other go vendoring tools are
+available](https://github.com/golang/go/wiki/PackageManagementTools).
+But they support two approaches: Either they copy the source code of
+dependencies into `vendor/`, which bloats the repository of your
+project.  Or, they write a dependency metadata file under `vendor/`
+which says how to get the dependencies.  But then anyone who wants to
+build the project needs to use a specific tool to retrieve the
+dependencies. (And there is no dominant standard for the dependency
+metadata files – there are even two different formats fore a file
+called `vendor.json`.)
 
 Instead, vendetta relies on a feature of git:
 [submodules](https://git-scm.com/docs/git-submodule) provides a way
