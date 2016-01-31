@@ -5,9 +5,9 @@ dependency management tools.
 
 ## Introduction
 
-Vendetta is a tool for managing the dependencies in the `vendor`
-directory of a go project.  Go has built-in vendoring support from
-version 1.5.  Vendetta is less obtrusive than other go dependency
+Vendetta is a minimal tool for managing the dependencies in the
+`vendor` directory of a go project.  Go has built-in vendoring support
+from version 1.5.  Vendetta is less obtrusive than other go dependency
 management tools because it relies on git submodules.  You don't need
 vendetta to build a project, or for most other development tasks.
 Vendetta is just used to populate the `vendor` directory with
