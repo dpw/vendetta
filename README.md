@@ -16,51 +16,6 @@ Because it uses git submodules, your project repository remains small,
 and it is easy to relate the contents of the `vendor` directory back
 to their origin repositories.
 
-## Background
-
-Go 1.5 introduced the [Go Vendor](https://golang.org/s/go15vendor)
-feature.  This provides support in the standard go tool set for
-`vendor` directories which contain the source code for dependencies of
-a project.  Notes that in Go 1.5, you must set the
-GO15VENDOREXPERIMENT environment variable to enable this feature; but
-Go 1.6 enables it by default.
-
-The Go Vendor feature is a significant step forward for dependency
-management in go.  But out of the box, it does not provide a way to
-populate the `vendor` directory for a project with its dependencies,
-or manage those dependencies as the project evolves.  Trying to do
-this by hand is cumbersome and error prone.
-
-Other go vendoring tools are available.  But they support two
-approaches: Either they copy the source code of dependencies into
-`vendor/`, which bloats the repository of your project.  Or, they
-write a dependency metadata file under `vendor/` which says how to get
-the dependencies.  But then anyone who wants to build the project needs
-to use a specific tool to retrieve the dependencies. (And there is no
-dominant standard for the dependency metadata files – there are even
-two different formats fore a file called `vendor.json`.)
-
-Instead, vendetta relies on a feature of git:
-[submodules](https://git-scm.com/docs/git-submodule) provides a way
-for one git repository to point to another git repository (and a
-specific commit within it).  And submodules are a standard feature of
-git, so git will retrieve them for you.  You may already have
-experience with submodules.  And tools built on top of git understand
-submodules (e.g. github knows about submodules, and will display a
-submodule pointing to another project on github as a link).
-
-When you clone a repository containing submodules, you need to do `git
-submodule update --init --recursive` in order to retrieve the
-submodule contents. This step is sometimes surprising to those new to
-git submodules.  But it can be hidden by incorporating it into build
-scripts or makefiles.  And `go get` will do `git submodule update`
-after cloning a repo, so it is not necessary to run it explicitly when
-fetching go packages in that way.
-
-A downside of git submodules is that, being a git-specific feature,
-they only support dependencies in git.  But given the dominance of git
-with the go community, this is not much of a limitation.
-
 ## Installation
 
 If you have your GOPATH set up:
@@ -106,3 +61,48 @@ Vendetta follows all the relevant Go conventions, such as ignoring
 
 * `-u`: _Update_ dependencies of your project.  This pulls from the
   remote repositories for required submodules under `vendor/`.
+
+## Background
+
+Go 1.5 introduced the [Go Vendor](https://golang.org/s/go15vendor)
+feature.  This provides support in the standard go tool set for
+`vendor` directories which contain the source code for dependencies of
+a project.  Notes that in Go 1.5, you must set the
+GO15VENDOREXPERIMENT environment variable to enable this feature; but
+Go 1.6 enables it by default.
+
+The Go Vendor feature is a significant step forward for dependency
+management in go.  But out of the box, it does not provide a way to
+populate the `vendor` directory for a project with its dependencies,
+or manage those dependencies as the project evolves.  Trying to do
+this by hand is cumbersome and error prone.
+
+Other go vendoring tools are available.  But they support two
+approaches: Either they copy the source code of dependencies into
+`vendor/`, which bloats the repository of your project.  Or, they
+write a dependency metadata file under `vendor/` which says how to get
+the dependencies.  But then anyone who wants to build the project needs
+to use a specific tool to retrieve the dependencies. (And there is no
+dominant standard for the dependency metadata files – there are even
+two different formats fore a file called `vendor.json`.)
+
+Instead, vendetta relies on a feature of git:
+[submodules](https://git-scm.com/docs/git-submodule) provides a way
+for one git repository to point to another git repository (and a
+specific commit within it).  And submodules are a standard feature of
+git, so git will retrieve them for you.  You may already have
+experience with submodules.  And tools built on top of git understand
+submodules (e.g. github knows about submodules, and will display a
+submodule pointing to another project on github as a link).
+
+When you clone a repository containing submodules, you need to do `git
+submodule update --init --recursive` in order to retrieve the
+submodule contents. This step is sometimes surprising to those new to
+git submodules.  But it can be hidden by incorporating it into build
+scripts or makefiles.  And `go get` will do `git submodule update`
+after cloning a repo, so it is not necessary to run it explicitly when
+fetching go packages in that way.
+
+A downside of git submodules is that, being a git-specific feature,
+they only support dependencies in git.  But given the dominance of git
+with the go community, this is not much of a limitation.
