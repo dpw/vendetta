@@ -38,9 +38,9 @@ The `vendetta` binary will be in the cloned `vendetta` directory.
 
 Usage: `vendetta `_`[options] [directory]`_
 
-The directory specified should be the top-level directory the git repo
-that holds your Go project.  If it is omitted, the current directory
-is used.
+The directory specified should be the top-level directory of the git
+repo that holds your Go project.  If it is omitted, the current
+directory is used.
 
 Like `go get`, vendetta identifies any missing packages needed to
 build your top-level project (including packages needed by other
@@ -67,7 +67,7 @@ Vendetta follows all the relevant Go conventions, such as ignoring
 Go 1.5 introduced the [Go Vendor](https://golang.org/s/go15vendor)
 feature.  This provides support in the standard go tool set for
 `vendor` directories which contain the source code for dependencies of
-a project.  Notes that in Go 1.5, you must set the
+a project.  Note that in Go 1.5, you must set the
 GO15VENDOREXPERIMENT environment variable to enable this feature; but
 Go 1.6 enables it by default.
 
@@ -85,17 +85,18 @@ project.  Or, they write a dependency metadata file under `vendor/`
 which says how to get the dependencies.  But then anyone who wants to
 build the project needs to use a specific tool to retrieve the
 dependencies. (And there is no dominant standard for the dependency
-metadata files – there are even two different formats fore a file
+metadata files – there are even two different formats for a file
 called `vendor.json`.)
 
-Instead, vendetta relies on a feature of git:
-[submodules](https://git-scm.com/docs/git-submodule) provides a way
-for one git repository to point to another git repository (and a
-specific commit within it).  And submodules are a standard feature of
-git, so git will retrieve them for you.  You may already have
-experience with submodules.  And tools built on top of git understand
-submodules (e.g. github knows about submodules, and will display a
-submodule pointing to another project on github as a link).
+Instead, vendetta relies on the
+[submodule](https://git-scm.com/docs/git-submodule) feature of git,
+which provides a way for one git repository to point to another git
+repository (and a specific commit within it).  And submodules are a
+standard feature of git, so git will retrieve them for you.  You may
+already have experience with submodules.  And tools built on top of
+git understand submodules (e.g. github knows about submodules, and
+will display a submodule pointing to another project on github as a
+link).
 
 When you clone a repository containing submodules, you need to do `git
 submodule update --init --recursive` in order to retrieve the
