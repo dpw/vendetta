@@ -100,13 +100,23 @@ type submodule struct {
 	used    bool
 }
 
-// Conceptually, a gopath element.  These are arranged into linked
-// lists, representing the gopath applicable for a particular
-// directory (produced by getGoPath and memoized in the goPaths map).
+// A goPath says where to search for packages (analogous to
+// GOPATH). Different directories have different gopaths because there
+// can be vendor directories anywhere, not just at the top level.
+// These gopaths are produced by getGoPath and memoized in the goPaths
+// map.
 type goPath struct {
-	dir      string
+	dir  string
+	next *goPath
+
+	// prefixes is nil for goPaths corresponding to vendor
+	// directories.  But there is also a goPath corresponding to
+	// the top-level project directory.  When searching for a
+	// package in that top-level directory, we need to remove any
+	// prefix of the package name corresponding to the root name
+	// of the project (e.g. github.com/user/proj).  prefixes is
+	// the set of such prefixes.
 	prefixes map[string]struct{}
-	next     *goPath
 }
 
 func run(cf *config) error {
@@ -539,8 +549,8 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	case err != nil:
 		return err
 	case found:
-		// Does it fall within an existing submodule
-		// args..under vendor/ ?
+		// Does the package fall within an existing submodule
+		// under vendor/ ?
 		if sm := v.pathInSubmodule(pkgdir); sm != nil {
 			sm.used = true
 			if v.update {
@@ -553,8 +563,6 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		return v.process(pkgdir, false, true)
 	}
 
-	// Figure out how to obtain the package. This is a rough
-	// approximation of what golang's vcs.go does:
 	bits := strings.Split(pkg, "/")
 
 	// Exclude golang standard packages
@@ -562,6 +570,11 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		return nil
 	}
 
+	// Figure out how to obtain the package.  Packages on
+	// github.com are treated as a special case, because that is
+	// most of them.  Otherwise, we use the queryRepoRoot code
+	// borrowed from vcs.go to figure out how to obtain the
+	// package.
 	var rootPkg, url string
 	if bits[0] == "github.com" {
 		if len(bits) < 3 {
