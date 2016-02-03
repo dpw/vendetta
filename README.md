@@ -6,15 +6,16 @@ dependency management tools.
 ## Introduction
 
 Vendetta is a minimal tool for managing the dependencies in the
-`vendor` directory of a go project.  Go has built-in vendoring support
-from version 1.5.  Vendetta is less obtrusive than other go dependency
-management tools because it relies on git submodules.  You don't need
-vendetta to build a project, or for most other development tasks.
-Vendetta is just used to populate the `vendor` directory with
-submodules, or to update them when a project's dependencies change.
-Because it uses git submodules, your project repository remains small,
-and it is easy to relate the contents of the `vendor` directory back
-to their origin repositories.
+`vendor` directory of a go project.  Go supports such directories
+[from version 1.5](https://golang.org/s/go15vendor), but doesn't
+provide a way to manage their contents.  Vendetta is less obtrusive
+than other go dependency management tools because it relies on git
+submodules.  You don't need vendetta to build a project, or for most
+other development tasks.  Vendetta is just used to populate the
+`vendor` directory with submodules, or to update them when a project's
+dependencies change.  Because it uses git submodules, your project
+repository remains small, and it is easy to relate the contents of the
+`vendor` directory back to their origin repositories.
 
 ## Installation
 
