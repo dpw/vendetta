@@ -109,6 +109,6 @@ fetching go packages in that way.
 
 A downside of git submodules is that, being a git-specific feature,
 they only allow dependencies that live in (or are mirrored to) git
-repositories.  But given the prevalence of git with the go community,
-and the ease of mirroring other VCSes to git, this is not much of a
-limitation.
+repositories.  But given the prevalence of git within the go
+community, and the ease of mirroring other VCSes to git, this is not
+much of a limitation.
