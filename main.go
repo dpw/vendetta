@@ -137,7 +137,7 @@ func run(cf *config) error {
 		}
 
 		if len(v.prefixes) == 0 {
-			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-p' option.")
+			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-n' option.")
 		}
 	}
 
