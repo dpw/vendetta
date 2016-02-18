@@ -590,7 +590,7 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		}
 
 		if rr.vcs != "git" {
-			return fmt.Errorf("Package %s does not live in a git repo")
+			return fmt.Errorf("Package %s does not live in a git repo", pkg)
 		}
 
 		rootPkg = rr.root
