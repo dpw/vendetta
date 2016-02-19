@@ -68,7 +68,7 @@ func main() {
 	cf.rootDir = "."
 	switch {
 	case flag.NArg() == 1:
-		cf.rootDir = flag.Arg(1)
+		cf.rootDir = flag.Arg(0)
 	case flag.NArg() > 1:
 		flag.Usage()
 		os.Exit(2)
@@ -209,7 +209,7 @@ func (v *vendetta) checkSubmodules() error {
 
 func (v *vendetta) checkSubmodule(dir string) error {
 	foundSomething := false
-	if err := readDir(dir, func(fi os.FileInfo) bool {
+	if err := readDir(v.realDir(dir), func(fi os.FileInfo) bool {
 		foundSomething = true
 		return false
 	}); err != nil && !os.IsNotExist(err) {
