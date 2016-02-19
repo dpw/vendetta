@@ -65,7 +65,6 @@ func main() {
 
 	flag.Parse()
 
-	cf.rootDir = "."
 	switch {
 	case flag.NArg() == 1:
 		cf.rootDir = flag.Arg(0)
@@ -159,7 +158,7 @@ func run(cf *config) error {
 var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
 
 func (v *vendetta) inferProjectNameFromGit() error {
-	remotes, err := popen("git", "-C", v.rootDir, "remote", "-v")
+	remotes, err := v.popen("git", "remote", "-v")
 	if err != nil {
 		return err
 	}
@@ -224,8 +223,8 @@ func (v *vendetta) checkSubmodule(dir string) error {
 }
 
 func (v *vendetta) querySubmodules(f func(string) bool, args ...string) error {
-	args = append([]string{"-C", v.rootDir, "submodule", "status"}, args...)
-	status, err := popen("git", args...)
+	status, err := v.popen("git",
+		append([]string{"submodule", "status"}, args...)...)
 	if err != nil {
 		return err
 	}
@@ -393,11 +392,12 @@ func (v *vendetta) gitSubmoduleAdd(url, dir string) error {
 }
 
 func (v *vendetta) git(args ...string) error {
-	return system("git", append([]string{"-C", v.rootDir}, args...)...)
+	return v.system("git", args...)
 }
 
-func system(name string, args ...string) error {
+func (v *vendetta) system(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	cmd.Dir = v.rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -419,8 +419,9 @@ type popenLines struct {
 	*bufio.Scanner
 }
 
-func popen(name string, args ...string) (popenLines, error) {
+func (v *vendetta) popen(name string, args ...string) (popenLines, error) {
 	cmd := exec.Command(name, args...)
+	cmd.Dir = v.rootDir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return popenLines{}, err
@@ -463,7 +464,12 @@ func (p popenLines) close() error {
 }
 
 func (v *vendetta) realDir(dir string) string {
-	return path.Join(v.rootDir, dir)
+	res := path.Join(v.rootDir, dir)
+	if res == "" {
+		res = "."
+	}
+
+	return res
 }
 
 func (v *vendetta) processRecursive(dir string, root bool) error {
