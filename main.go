@@ -9,13 +9,15 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 )
 
 // TODO:
+//
+// Don't need a project name if everything is in package main
 //
 // check the directory is a git repo, and error if not
 //
@@ -37,8 +39,6 @@ import (
 // check that declared package names match dirs
 //
 // infer project name from GOPATH
-//
-// use type aliases for packages and paths?
 
 type config struct {
 	rootDir     string
@@ -180,7 +180,7 @@ func (v *vendetta) inferProjectNameFromGit() error {
 
 			name = "github.com/" + name
 			if _, found := v.prefixes[name]; !found {
-				fmt.Println("Inferred package name", name, "from git remote")
+				fmt.Println("Inferred root package name", name, "from git remote")
 				v.prefixes[name] = struct{}{}
 			}
 		}
@@ -464,7 +464,7 @@ func (p popenLines) close() error {
 }
 
 func (v *vendetta) realDir(dir string) string {
-	res := path.Join(v.rootDir, dir)
+	res := filepath.Join(v.rootDir, dir)
 	if res == "" {
 		res = "."
 	}
@@ -497,7 +497,7 @@ func (v *vendetta) processRecursive(dir string, root bool) error {
 			continue
 		}
 
-		err := v.processRecursive(path.Join(dir, subdir), false)
+		err := v.processRecursive(filepath.Join(dir, subdir), false)
 		if err != nil {
 			return err
 		}
@@ -603,12 +603,12 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		url = rr.repo
 	}
 
-	projDir := path.Join("vendor", packageToPath(rootPkg))
+	projDir := filepath.Join("vendor", packageToPath(rootPkg))
 	if err := v.gitSubmoduleAdd(url, projDir); err != nil {
 		return err
 	}
 
-	return v.process(path.Join("vendor", packageToPath(pkg)), false, true)
+	return v.process(filepath.Join("vendor", packageToPath(pkg)), false, true)
 }
 
 // Search the gopath for the given dir to find an existing package
@@ -647,7 +647,7 @@ func (v *vendetta) getGoPath(dir string) (*goPath, error) {
 
 	// If there's a vendor/ dir here, we need to put it on the
 	// front of the gopath
-	vendorDir := path.Join(dir, "vendor")
+	vendorDir := filepath.Join(dir, "vendor")
 	fi, err := os.Stat(v.realDir(vendorDir))
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -668,7 +668,7 @@ func (gp *goPath) provides(pkg string, v *vendetta) (bool, string, error) {
 	}
 
 	foundGoSrc := false
-	pkgdir := path.Join(gp.dir, packageToPath(pkg))
+	pkgdir := filepath.Join(gp.dir, packageToPath(pkg))
 	if err := readDir(v.realDir(pkgdir), func(fi os.FileInfo) bool {
 		// Should check for symlinks here?
 		if fi.Mode().IsRegular() && strings.HasSuffix(fi.Name(), ".go") {
@@ -704,12 +704,12 @@ func (gp *goPath) removePrefix(pkg string) (bool, string) {
 
 // Convert a package name to a filesystem path
 func packageToPath(name string) string {
-	return strings.Replace(name, "/", string(os.PathSeparator), -1)
+	return filepath.FromSlash(name)
 }
 
 // Convert a filesystem path to a package name
 func pathToPackage(path string) string {
-	return strings.Replace(path, string(os.PathSeparator), "/", -1)
+	return filepath.ToSlash(path)
 }
 
 func readDir(dir string, f func(os.FileInfo) bool) error {
