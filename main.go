@@ -37,8 +37,6 @@ import (
 // github.com/foo/bar/baz, we find github.com/foo.
 //
 // check that declared package names match dirs
-//
-// infer project name from GOPATH
 
 type config struct {
 	rootDir     string
@@ -131,6 +129,10 @@ func run(cf *config) error {
 	if cf.projectName != "" {
 		v.prefixes[cf.projectName] = struct{}{}
 	} else {
+		if err := v.inferProjectNameFromGoPath(); err != nil {
+			return err
+		}
+
 		if err := v.inferProjectNameFromGit(); err != nil {
 			return err
 		}
@@ -153,6 +155,69 @@ func run(cf *config) error {
 	}
 
 	return v.pruneSubmodules()
+}
+
+// Attempt to infer the project name from GOPATH, by seeing if the
+// project dir resides under any element of the GOPATH.
+func (v *vendetta) inferProjectNameFromGoPath() error {
+	gp := os.Getenv("GOPATH")
+	if gp == "" {
+		return nil
+	}
+
+	var gpfis []os.FileInfo
+	for _, p := range filepath.SplitList(gp) {
+		fi, err := os.Stat(filepath.Join(p, "src"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+
+			return err
+		}
+
+		gpfis = append(gpfis, fi)
+	}
+
+	dir := v.rootDir
+	if dir == "" {
+		dir = "."
+	}
+
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+
+	var proj, projsep string
+	for {
+		var subdir string
+		dir, subdir = filepath.Split(dir)
+
+		proj = subdir + projsep + proj
+		projsep = "/"
+
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return err
+		}
+
+		for _, gpfi := range gpfis {
+			if os.SameFile(fi, gpfi) {
+				fmt.Println("Inferred root package name", proj, "from GOPATH")
+				v.prefixes[proj] = struct{}{}
+				return nil
+			}
+		}
+
+		if dir != "" && dir[len(dir)-1] == os.PathSeparator {
+			dir = dir[:len(dir)-1]
+		}
+
+		if dir == "" {
+			return nil
+		}
+	}
 }
 
 var remoteUrlRE = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:)(.*\.?)$`)
