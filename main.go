@@ -204,8 +204,7 @@ func (v *vendetta) inferProjectNameFromGoPath() error {
 
 		for _, gpfi := range gpfis {
 			if os.SameFile(fi, gpfi) {
-				fmt.Println("Inferred root package name", proj, "from GOPATH")
-				v.prefixes[proj] = struct{}{}
+				v.inferredProjectName(proj, "GOPATH")
 				return nil
 			}
 		}
@@ -243,11 +242,8 @@ func (v *vendetta) inferProjectNameFromGit() error {
 				name = name[:len(name)-4]
 			}
 
-			name = "github.com/" + name
-			if _, found := v.prefixes[name]; !found {
-				fmt.Println("Inferred root package name", name, "from git remote")
-				v.prefixes[name] = struct{}{}
-			}
+			v.inferredProjectName("github.com/"+name,
+				"git remote")
 		}
 	}
 
@@ -256,6 +252,13 @@ func (v *vendetta) inferProjectNameFromGit() error {
 	}
 
 	return nil
+}
+
+func (v *vendetta) inferredProjectName(proj, source string) {
+	if _, found := v.prefixes[proj]; !found {
+		fmt.Println("Inferred root package name", proj, "from", source)
+		v.prefixes[proj] = struct{}{}
+	}
 }
 
 // Check for submodules that seem to be missing in the working tree.
