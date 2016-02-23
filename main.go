@@ -26,8 +26,6 @@ import (
 //
 // verbose option to print git commands being run
 //
-// do import path checking, as described at https://golang.org/cmd/go/
-//
 // popen should include command in errors
 //
 // Deal with git being fussy when a submodule is removed then re-added
@@ -37,6 +35,10 @@ import (
 // github.com/foo/bar/baz, we find github.com/foo.
 //
 // check that declared package names match dirs
+//
+// Support relative imports
+//
+// Infer project name from import comments
 
 type config struct {
 	rootDir     string
@@ -80,21 +82,10 @@ func main() {
 type vendetta struct {
 	*config
 	goPath
-	goPaths       map[string]*goPath
-	processedDirs map[string]struct{}
-	submodules    []submodule
-	trace         []trace
-}
-
-type trace struct {
-	dir string
-	pkg string
-}
-
-type submodule struct {
-	dir     string
-	updated bool
-	used    bool
+	goPaths     map[string]*goPath
+	dirPackages map[string]packageInfo
+	submodules  []submodule
+	trace       []trace
 }
 
 // A goPath says where to search for packages (analogous to
@@ -116,11 +107,25 @@ type goPath struct {
 	prefixes map[string]struct{}
 }
 
+type packageInfo struct {
+	importComment string
+}
+
+type submodule struct {
+	dir  string
+	used bool
+}
+
+type trace struct {
+	dir string
+	pkg string
+}
+
 func run(cf *config) error {
 	v := vendetta{
-		config:        cf,
-		goPaths:       make(map[string]*goPath),
-		processedDirs: make(map[string]struct{}),
+		config:      cf,
+		goPaths:     make(map[string]*goPath),
+		dirPackages: make(map[string]packageInfo),
 	}
 
 	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
@@ -150,7 +155,7 @@ func run(cf *config) error {
 		return err
 	}
 
-	if err := v.processRecursive("", true); err != nil {
+	if err := v.scanRecursive("", true); err != nil {
 		return err
 	}
 
@@ -354,7 +359,7 @@ func (v *vendetta) addSubmodule(dir string) {
 
 	submodules := make([]submodule, len(v.submodules)+1)
 	copy(submodules, v.submodules[:i])
-	submodules[i] = submodule{dir: dir, updated: true, used: true}
+	submodules[i] = submodule{dir: dir, used: true}
 	copy(submodules[i+1:], v.submodules[i:])
 	v.submodules = submodules
 }
@@ -365,11 +370,6 @@ func isSubpath(path, dir string) bool {
 }
 
 func (v *vendetta) updateSubmodule(sm *submodule) error {
-	if sm.updated {
-		return nil
-	}
-
-	sm.updated = true
 	fmt.Fprintf(os.Stderr, "Updating submodule %s from remote\n", sm.dir)
 	if err := v.git("submodule", "update", "--remote", "--recursive", sm.dir); err != nil {
 		return err
@@ -540,8 +540,8 @@ func (v *vendetta) realDir(dir string) string {
 	return res
 }
 
-func (v *vendetta) processRecursive(dir string, root bool) error {
-	if err := v.process(dir, true, false); err != nil {
+func (v *vendetta) scanRecursive(dir string, root bool) error {
+	if _, err := v.scanPackage(dir, true, false); err != nil {
 		return err
 	}
 
@@ -565,7 +565,7 @@ func (v *vendetta) processRecursive(dir string, root bool) error {
 			continue
 		}
 
-		err := v.processRecursive(filepath.Join(dir, subdir), false)
+		err := v.scanRecursive(filepath.Join(dir, subdir), false)
 		if err != nil {
 			return err
 		}
@@ -574,22 +574,24 @@ func (v *vendetta) processRecursive(dir string, root bool) error {
 	return nil
 }
 
-func (v *vendetta) process(dir string, testsToo bool, strict bool) error {
-	if _, found := v.processedDirs[dir]; found {
-		return nil
+func (v *vendetta) scanPackage(dir string, testsToo bool, strict bool) (packageInfo, error) {
+	if pi, found := v.dirPackages[dir]; found {
+		return pi, nil
 	}
 
-	v.processedDirs[dir] = struct{}{}
-
-	pkg, err := build.Default.ImportDir(v.realDir(dir), 0)
+	pkg, err := build.Default.ImportDir(v.realDir(dir), build.ImportComment)
 	if err != nil {
+		pi := packageInfo{}
 		if _, ok := err.(*build.NoGoError); ok && !strict {
-			return nil
+			return pi, nil
 		}
 
-		return fmt.Errorf("gathering imports in %s: %s",
+		return pi, fmt.Errorf("gathering imports in %s: %s",
 			v.realDir(dir), err)
 	}
+
+	pi := packageInfo{importComment: pkg.ImportComment}
+	v.dirPackages[dir] = pi
 
 	deps := func(imports []string) error {
 		for _, imp := range imports {
@@ -605,16 +607,16 @@ func (v *vendetta) process(dir string, testsToo bool, strict bool) error {
 	}
 
 	if err := deps(pkg.Imports); err != nil {
-		return err
+		return pi, err
 	}
 
 	if testsToo {
 		if err := deps(pkg.TestImports); err != nil {
-			return err
+			return pi, err
 		}
 	}
 
-	return nil
+	return pi, nil
 }
 
 func (v *vendetta) dependency(dir string, pkg string) error {
@@ -625,7 +627,7 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	case found:
 		// Does the package fall within an existing submodule
 		// under vendor/ ?
-		if sm := v.pathInSubmodule(pkgdir); sm != nil {
+		if sm := v.pathInSubmodule(pkgdir); sm != nil && !sm.used {
 			sm.used = true
 			if v.update {
 				if err := v.updateSubmodule(sm); err != nil {
@@ -634,14 +636,32 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 			}
 		}
 
-		return v.process(pkgdir, false, true)
+	default:
+		pkgdir, err = v.obtainPackage(pkg)
+		if err != nil || pkgdir == "" {
+			return err
+		}
 	}
 
+	pi, err := v.scanPackage(pkgdir, false, true)
+	if err != nil {
+		return err
+	}
+
+	if pi.importComment != "" && pkg != pi.importComment {
+		fmt.Printf("Warning: Package with import comment %s referred to as %s (from directory %s)\n",
+			pi.importComment, pkg, v.realDir(dir))
+	}
+
+	return nil
+}
+
+func (v *vendetta) obtainPackage(pkg string) (string, error) {
 	bits := strings.Split(pkg, "/")
 
 	// Exclude golang standard packages
 	if !strings.Contains(bits[0], ".") {
-		return nil
+		return "", nil
 	}
 
 	// Figure out how to obtain the package.  Packages on
@@ -652,7 +672,7 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	var rootPkg, url string
 	if bits[0] == "github.com" {
 		if len(bits) < 3 {
-			return fmt.Errorf("github.com package name %s seems to be truncated", pkg)
+			return "", fmt.Errorf("github.com package name %s seems to be truncated", pkg)
 		}
 
 		rootPkg = strings.Join(bits[:3], "/")
@@ -660,11 +680,11 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 	} else {
 		rr, err := queryRepoRoot(pkg, secure)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		if rr.vcs != "git" {
-			return fmt.Errorf("Package %s does not live in a git repo", pkg)
+			return "", fmt.Errorf("Package %s does not live in a git repo", pkg)
 		}
 
 		rootPkg = rr.root
@@ -673,10 +693,10 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 
 	projDir := filepath.Join("vendor", packageToPath(rootPkg))
 	if err := v.gitSubmoduleAdd(url, projDir); err != nil {
-		return err
+		return "", err
 	}
 
-	return v.process(filepath.Join("vendor", packageToPath(pkg)), false, true)
+	return filepath.Join("vendor", packageToPath(pkg)), nil
 }
 
 // Search the gopath for the given dir to find an existing package
