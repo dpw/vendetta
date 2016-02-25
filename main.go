@@ -83,9 +83,8 @@ type vendetta struct {
 	*config
 	goPath
 	goPaths     map[string]*goPath
-	dirPackages map[string]packageInfo
+	dirPackages map[string]*build.Package
 	submodules  []submodule
-	trace       []trace
 }
 
 // A goPath says where to search for packages (analogous to
@@ -107,25 +106,16 @@ type goPath struct {
 	prefixes map[string]struct{}
 }
 
-type packageInfo struct {
-	importComment string
-}
-
 type submodule struct {
 	dir  string
 	used bool
-}
-
-type trace struct {
-	dir string
-	pkg string
 }
 
 func run(cf *config) error {
 	v := vendetta{
 		config:      cf,
 		goPaths:     make(map[string]*goPath),
-		dirPackages: make(map[string]packageInfo),
+		dirPackages: make(map[string]*build.Package),
 	}
 
 	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
@@ -155,7 +145,7 @@ func run(cf *config) error {
 		return err
 	}
 
-	if err := v.scanRecursive("", true); err != nil {
+	if err := v.scanRootProject(); err != nil {
 		return err
 	}
 
@@ -540,33 +530,59 @@ func (v *vendetta) realDir(dir string) string {
 	return res
 }
 
-func (v *vendetta) scanRecursive(dir string, root bool) error {
-	if _, err := v.scanPackage(dir, true, false); err != nil {
-		return err
-	}
+func (v *vendetta) scanRootProject() error {
+	// Collect all root project package directories
+	var dirs []string
+	var err error
 
-	var subdirs []string
-	if err := readDir(v.realDir(dir), func(fi os.FileInfo) bool {
-		if fi.IsDir() {
-			subdirs = append(subdirs, fi.Name())
-		}
-		return true
-	}); err != nil {
-		return err
-	}
-
-	for _, subdir := range subdirs {
-		switch subdir {
-		case "vendor":
-			if root {
-				continue
+	var traverseDir func(dir string, root bool)
+	traverseDir = func(dir string, root bool) {
+		dirs = append(dirs, dir)
+		err = readDir(v.realDir(dir), func(fi os.FileInfo) bool {
+			if !fi.IsDir() {
+				return true
 			}
-		case "testdata":
+
+			switch fi.Name() {
+			case "vendor":
+				if root {
+					return true
+				}
+			case "testdata":
+				return true
+			}
+
+			traverseDir(filepath.Join(dir, fi.Name()), false)
+			return err == nil
+		})
+	}
+
+	traverseDir("", true)
+	if err != nil {
+		return err
+	}
+
+	// Load each package, without resolving dependencies, because
+	// we process packages in the root project slightly
+	// differently to dependency packages.
+	for _, dir := range dirs {
+		_, err := v.loadPackage(dir, true)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Now resolve dependencies
+	for _, dir := range dirs {
+		pkg := v.dirPackages[dir]
+		if pkg == nil {
 			continue
 		}
 
-		err := v.scanRecursive(filepath.Join(dir, subdir), false)
-		if err != nil {
+		if err = v.resolveDependencies(dir, pkg.Imports); err != nil {
+			return err
+		}
+		if err = v.resolveDependencies(dir, pkg.TestImports); err != nil {
 			return err
 		}
 	}
@@ -574,52 +590,49 @@ func (v *vendetta) scanRecursive(dir string, root bool) error {
 	return nil
 }
 
-func (v *vendetta) scanPackage(dir string, testsToo bool, strict bool) (packageInfo, error) {
-	if pi, found := v.dirPackages[dir]; found {
-		return pi, nil
+func (v *vendetta) scanPackage(dir string) (*build.Package, error) {
+	if pkg := v.dirPackages[dir]; pkg != nil {
+		return pkg, nil
 	}
 
+	pkg, err := v.loadPackage(dir, false)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = v.resolveDependencies(dir, pkg.Imports); err != nil {
+		return nil, err
+	}
+
+	return pkg, nil
+}
+
+func (v *vendetta) loadPackage(dir string, noGoOk bool) (*build.Package, error) {
 	pkg, err := build.Default.ImportDir(v.realDir(dir), build.ImportComment)
 	if err != nil {
-		pi := packageInfo{}
-		if _, ok := err.(*build.NoGoError); ok && !strict {
-			return pi, nil
+		if _, ok := err.(*build.NoGoError); ok && noGoOk {
+			return nil, nil
 		}
 
-		return pi, fmt.Errorf("gathering imports in %s: %s",
+		return nil, fmt.Errorf("gathering imports in %s: %s",
 			v.realDir(dir), err)
 	}
 
-	pi := packageInfo{importComment: pkg.ImportComment}
-	v.dirPackages[dir] = pi
-
-	deps := func(imports []string) error {
-		for _, imp := range imports {
-			v.trace = append(v.trace, trace{dir, imp})
-
-			if err := v.dependency(dir, imp); err != nil {
-				return err
-			}
-
-			v.trace = v.trace[:len(v.trace)-1]
-		}
-		return nil
-	}
-
-	if err := deps(pkg.Imports); err != nil {
-		return pi, err
-	}
-
-	if testsToo {
-		if err := deps(pkg.TestImports); err != nil {
-			return pi, err
-		}
-	}
-
-	return pi, nil
+	v.dirPackages[dir] = pkg
+	return pkg, nil
 }
 
-func (v *vendetta) dependency(dir string, pkg string) error {
+func (v *vendetta) resolveDependencies(dir string, deps []string) error {
+	for _, dep := range deps {
+		if err := v.resolveDependency(dir, dep); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (v *vendetta) resolveDependency(dir string, pkg string) error {
 	found, pkgdir, err := v.searchGoPath(dir, pkg)
 	switch {
 	case err != nil:
@@ -643,14 +656,14 @@ func (v *vendetta) dependency(dir string, pkg string) error {
 		}
 	}
 
-	pi, err := v.scanPackage(pkgdir, false, true)
+	pi, err := v.scanPackage(pkgdir)
 	if err != nil {
 		return err
 	}
 
-	if pi.importComment != "" && pkg != pi.importComment {
+	if pi.ImportComment != "" && pkg != pi.ImportComment {
 		fmt.Printf("Warning: Package with import comment %s referred to as %s (from directory %s)\n",
-			pi.importComment, pkg, v.realDir(dir))
+			pi.ImportComment, pkg, v.realDir(dir))
 	}
 
 	return nil
