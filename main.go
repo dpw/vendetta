@@ -17,8 +17,6 @@ import (
 
 // TODO:
 //
-// Don't need a project name if everything is in package main
-//
 // check the directory is a git repo, and error if not
 //
 // option to run in any directory of git repo.  Needs to figure out
@@ -36,9 +34,11 @@ import (
 //
 // check that declared package names match dirs
 //
-// Support relative imports
+// Support relative (aka local) imports
 //
 // Infer project name from import comments
+//
+// Warn on diamond problem
 
 type config struct {
 	rootDir     string
@@ -121,6 +121,11 @@ func run(cf *config) error {
 	v.goPaths[""] = &goPath{dir: "vendor", next: &v.goPath}
 	v.prefixes = make(map[string]struct{})
 
+	rootPkgs, err := v.scanRootProject()
+	if err != nil {
+		return err
+	}
+
 	if cf.projectName != "" {
 		v.prefixes[cf.projectName] = struct{}{}
 	} else {
@@ -132,7 +137,7 @@ func run(cf *config) error {
 			return err
 		}
 
-		if len(v.prefixes) == 0 {
+		if !mainOnly(rootPkgs) && len(v.prefixes) == 0 {
 			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-n' option.")
 		}
 	}
@@ -145,7 +150,7 @@ func run(cf *config) error {
 		return err
 	}
 
-	if err := v.scanRootProject(); err != nil {
+	if err := v.resolveRootProjectDeps(rootPkgs); err != nil {
 		return err
 	}
 
@@ -530,14 +535,25 @@ func (v *vendetta) realDir(dir string) string {
 	return res
 }
 
-func (v *vendetta) scanRootProject() error {
-	// Collect all root project package directories
-	var dirs []string
+func (v *vendetta) scanRootProject() ([]*build.Package, error) {
+	// Load each package in the root project without resolving
+	// dependencies, because we process packages in the root
+	// project slightly differently to dependency packages.
+	var pkgs []*build.Package
 	var err error
 
 	var traverseDir func(dir string, root bool)
 	traverseDir = func(dir string, root bool) {
-		dirs = append(dirs, dir)
+		var pkg *build.Package
+		pkg, err = v.loadPackage(dir, true)
+		if err != nil {
+			return
+		}
+
+		if pkg != nil {
+			pkgs = append(pkgs, pkg)
+		}
+
 		err = readDir(v.realDir(dir), func(fi os.FileInfo) bool {
 			if !fi.IsDir() {
 				return true
@@ -559,35 +575,33 @@ func (v *vendetta) scanRootProject() error {
 
 	traverseDir("", true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Load each package, without resolving dependencies, because
-	// we process packages in the root project slightly
-	// differently to dependency packages.
-	for _, dir := range dirs {
-		_, err := v.loadPackage(dir, true)
-		if err != nil {
+	return pkgs, nil
+}
+
+func (v *vendetta) resolveRootProjectDeps(pkgs []*build.Package) error {
+	for _, pkg := range pkgs {
+		if err := v.resolveDependencies(pkg.Dir, pkg.Imports); err != nil {
 			return err
 		}
-	}
-
-	// Now resolve dependencies
-	for _, dir := range dirs {
-		pkg := v.dirPackages[dir]
-		if pkg == nil {
-			continue
-		}
-
-		if err = v.resolveDependencies(dir, pkg.Imports); err != nil {
-			return err
-		}
-		if err = v.resolveDependencies(dir, pkg.TestImports); err != nil {
+		if err := v.resolveDependencies(pkg.Dir, pkg.TestImports); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func mainOnly(pkgs []*build.Package) bool {
+	for _, pkg := range pkgs {
+		if pkg.Name != "main" {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (v *vendetta) scanPackage(dir string) (*build.Package, error) {
