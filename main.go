@@ -535,11 +535,16 @@ func (v *vendetta) realDir(dir string) string {
 	return res
 }
 
-func (v *vendetta) scanRootProject() ([]*build.Package, error) {
+type rootPackage struct {
+	dir string
+	*build.Package
+}
+
+func (v *vendetta) scanRootProject() ([]rootPackage, error) {
 	// Load each package in the root project without resolving
 	// dependencies, because we process packages in the root
 	// project slightly differently to dependency packages.
-	var pkgs []*build.Package
+	var pkgs []rootPackage
 	var err error
 
 	var traverseDir func(dir string, root bool)
@@ -551,7 +556,7 @@ func (v *vendetta) scanRootProject() ([]*build.Package, error) {
 		}
 
 		if pkg != nil {
-			pkgs = append(pkgs, pkg)
+			pkgs = append(pkgs, rootPackage{dir, pkg})
 		}
 
 		err = readDir(v.realDir(dir), func(fi os.FileInfo) bool {
@@ -581,12 +586,12 @@ func (v *vendetta) scanRootProject() ([]*build.Package, error) {
 	return pkgs, nil
 }
 
-func (v *vendetta) resolveRootProjectDeps(pkgs []*build.Package) error {
+func (v *vendetta) resolveRootProjectDeps(pkgs []rootPackage) error {
 	for _, pkg := range pkgs {
-		if err := v.resolveDependencies(pkg.Dir, pkg.Imports); err != nil {
+		if err := v.resolveDependencies(pkg.dir, pkg.Imports); err != nil {
 			return err
 		}
-		if err := v.resolveDependencies(pkg.Dir, pkg.TestImports); err != nil {
+		if err := v.resolveDependencies(pkg.dir, pkg.TestImports); err != nil {
 			return err
 		}
 	}
@@ -594,7 +599,7 @@ func (v *vendetta) resolveRootProjectDeps(pkgs []*build.Package) error {
 	return nil
 }
 
-func mainOnly(pkgs []*build.Package) bool {
+func mainOnly(pkgs []rootPackage) bool {
 	for _, pkg := range pkgs {
 		if pkg.Name != "main" {
 			return false
@@ -696,14 +701,14 @@ func (v *vendetta) obtainPackage(pkg string) (string, error) {
 	// most of them.  Otherwise, we use the queryRepoRoot code
 	// borrowed from vcs.go to figure out how to obtain the
 	// package.
-	var rootPkg, url string
+	var basePkg, url string
 	if bits[0] == "github.com" {
 		if len(bits) < 3 {
 			return "", fmt.Errorf("github.com package name %s seems to be truncated", pkg)
 		}
 
-		rootPkg = strings.Join(bits[:3], "/")
-		url = "https://" + rootPkg
+		basePkg = strings.Join(bits[:3], "/")
+		url = "https://" + basePkg
 	} else {
 		rr, err := queryRepoRoot(pkg, secure)
 		if err != nil {
@@ -714,11 +719,11 @@ func (v *vendetta) obtainPackage(pkg string) (string, error) {
 			return "", fmt.Errorf("Package %s does not live in a git repo", pkg)
 		}
 
-		rootPkg = rr.root
+		basePkg = rr.root
 		url = rr.repo
 	}
 
-	projDir := filepath.Join("vendor", packageToPath(rootPkg))
+	projDir := filepath.Join("vendor", packageToPath(basePkg))
 	if err := v.gitSubmoduleAdd(url, projDir); err != nil {
 		return "", err
 	}
