@@ -29,14 +29,12 @@ import (
 // Deal with git being fussy when a submodule is removed then re-added
 //
 // warn when it looks like a package ought to be present at the
-// particular path, but it's not.  E.g. when resolving an import of
-// github.com/foo/bar/baz, we find github.com/foo.
+// particular path, but it's not.  E.g. when resolve an import of
+// github.com/foo/bar/baz, we find that only github.com/foo exists.
 //
 // check that declared package names match dirs
 //
 // Support relative (aka local) imports
-//
-// Infer project name from import comments
 //
 // Warn on diamond problem
 
@@ -137,6 +135,8 @@ func run(cf *config) error {
 			return err
 		}
 
+		v.inferProjectNameFromImportComments(rootPkgs)
+
 		if !mainOnly(rootPkgs) && len(v.prefixes) == 0 {
 			return fmt.Errorf("Unable to infer project name; specify it explicitly with the '-n' option.")
 		}
@@ -165,9 +165,11 @@ func (v *vendetta) inferProjectNameFromGoPath() error {
 		return nil
 	}
 
-	var gpfis []os.FileInfo
-	for _, p := range filepath.SplitList(gp) {
-		fi, err := os.Stat(filepath.Join(p, "src"))
+	gpparts := filepath.SplitList(gp)
+	gpfis := make([]os.FileInfo, len(gpparts))
+	for i, p := range gpparts {
+		var err error
+		gpfis[i], err = os.Stat(filepath.Join(p, "src"))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -175,10 +177,9 @@ func (v *vendetta) inferProjectNameFromGoPath() error {
 
 			return err
 		}
-
-		gpfis = append(gpfis, fi)
 	}
 
+	// Get the absolute path to the project dir
 	dir := v.rootDir
 	if dir == "" {
 		dir = "."
@@ -189,6 +190,7 @@ func (v *vendetta) inferProjectNameFromGoPath() error {
 		return err
 	}
 
+	// walk from the project dir upwards towards the filesystem root
 	var proj, projsep string
 	for {
 		var subdir string
@@ -202,9 +204,10 @@ func (v *vendetta) inferProjectNameFromGoPath() error {
 			return err
 		}
 
-		for _, gpfi := range gpfis {
-			if os.SameFile(fi, gpfi) {
-				v.inferredProjectName(proj, "GOPATH")
+		for i, gpfi := range gpfis {
+			if gpfi != nil && os.SameFile(fi, gpfi) {
+				v.inferredProjectName(proj, "GOPATH element",
+					gpparts[i])
 				return nil
 			}
 		}
@@ -243,7 +246,7 @@ func (v *vendetta) inferProjectNameFromGit() error {
 			}
 
 			v.inferredProjectName("github.com/"+name,
-				"git remote")
+				"git remote", fields[0])
 		}
 	}
 
@@ -254,9 +257,37 @@ func (v *vendetta) inferProjectNameFromGit() error {
 	return nil
 }
 
-func (v *vendetta) inferredProjectName(proj, source string) {
+func (v *vendetta) inferProjectNameFromImportComments(rootPkgs []rootPackage) {
+	for _, pkg := range rootPkgs {
+		ic := pkg.ImportComment
+		if ic == "" {
+			continue
+		}
+
+		// For an import comment to suggest a project name, it
+		// should have the path of the package within the
+		// project as a suffix.
+		if pkg.dir != "" {
+			suffix := pathToPackage(pkg.dir)
+			if len(ic) <= len(suffix) ||
+				ic[len(ic)-len(suffix):] != suffix &&
+					ic[len(ic)-len(suffix)-1] != '/' {
+				continue
+			}
+
+			ic = ic[:len(ic)-len(suffix)-1]
+		}
+
+		v.inferredProjectName(ic, "import comment in",
+			v.realDir(pkg.dir))
+	}
+}
+
+func (v *vendetta) inferredProjectName(proj string, source ...interface{}) {
 	if _, found := v.prefixes[proj]; !found {
-		fmt.Println("Inferred root package name", proj, "from", source)
+		fmt.Println(append([]interface{}{
+			"Inferred root package name", proj, "from",
+		}, source...)...)
 		v.prefixes[proj] = struct{}{}
 	}
 }
