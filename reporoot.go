@@ -105,13 +105,7 @@ func queryRepoRoot(importPath string, security securityMode) (*repoRoot, error) 
 		if err != errNoMatch {
 			return nil, fmt.Errorf("parse %s: %v", urlStr, err)
 		}
-
-		bestGuess := strings.Join(strings.Split(importPath, "/")[:3], "/")
-		return &repoRoot{
-			vcs:  "git",
-			repo: fmt.Sprintf("https://%s.git", bestGuess),
-			root: bestGuess,
-		}, nil
+		return nil, fmt.Errorf("parse %s: no go-import meta tags", urlStr)
 	}
 	if buildV {
 		log.Printf("get %q: found meta tag %#v at %s", importPath, mmi, urlStr)

@@ -740,18 +740,23 @@ func (v *vendetta) obtainPackage(pkg string) (string, error) {
 
 		basePkg = strings.Join(bits[:3], "/")
 		url = "https://" + basePkg
-	} else {
-		rr, err := queryRepoRoot(pkg, secure)
-		if err != nil {
-			return "", err
-		}
-
+	} else if rr, err := queryRepoRoot(pkg, secure); err == nil {
 		if rr.vcs != "git" {
 			return "", fmt.Errorf("Package %s does not live in a git repo", pkg)
 		}
 
 		basePkg = rr.root
 		url = rr.repo
+	} else if strings.HasSuffix(err.Error(), "no go-import meta tags") && len(bits) >= 3 {
+		// When no go-import meta tag is found, guess the base
+		// package and repo URL, so that e.g. package names on
+		// gitlab work.  The test above is gross, but it
+		// avoids changes to the borrowed reporoot code.
+		basePkg = strings.Join(bits[:3], "/")
+		url = fmt.Sprintf("https://%s.git", basePkg)
+		fmt.Printf("Warning: no go-import meta tags found for package '%s'. Guessing git repo URL '%s'\n", pkg, url)
+	} else {
+		return "", err
 	}
 
 	projDir := filepath.Join("vendor", packageToPath(basePkg))
