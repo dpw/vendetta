@@ -625,6 +625,9 @@ func (v *vendetta) resolveRootProjectDeps(pkgs []rootPackage) error {
 		if err := v.resolveDependencies(pkg.dir, pkg.TestImports); err != nil {
 			return err
 		}
+		if err := v.resolveDependencies(pkg.dir, pkg.XTestImports); err != nil {
+			return err
+		}
 	}
 
 	return nil
