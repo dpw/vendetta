@@ -743,6 +743,8 @@ func (v *vendetta) obtainPackage(pkg string) (string, error) {
 
 		basePkg = strings.Join(bits[:3], "/")
 		url = "https://" + basePkg
+	} else if bits[0] == "bitbucket.org" {
+		return "", fmt.Errorf("Package %s is on bitbucket.org; giving up as it might be an hg repo", pkg)
 	} else if rr, err := queryRepoRoot(pkg, secure); err == nil {
 		if rr.vcs != "git" {
 			return "", fmt.Errorf("Package %s does not live in a git repo", pkg)
