@@ -744,7 +744,17 @@ func (v *vendetta) obtainPackage(pkg string) (string, error) {
 		basePkg = strings.Join(bits[:3], "/")
 		url = "https://" + basePkg
 	} else if bits[0] == "bitbucket.org" {
-		return "", fmt.Errorf("Package %s is on bitbucket.org; giving up as it might be an hg repo", pkg)
+		if len(bits) < 3 {
+			return "", fmt.Errorf("bitbucket.org package name %s seems to be truncated", pkg)
+		}
+
+		basePkg = strings.Join(bits[:3], "/")
+		url = "https://" + basePkg
+
+		// Probe to see if it is a git repo
+		if exec.Command("git", "ls-remote", url).Run() != nil {
+			return "", fmt.Errorf("Package %s does not seem to be git repo at %s; maybe it's an hg repo?", pkg, url)
+		}
 	} else if rr, err := queryRepoRoot(pkg, secure); err == nil {
 		if rr.vcs != "git" {
 			return "", fmt.Errorf("Package %s does not live in a git repo", pkg)
